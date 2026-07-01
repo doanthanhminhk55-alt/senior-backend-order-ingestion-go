@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/example/senior-backend-order-ingestion-go/internal/domain"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -18,14 +19,9 @@ const (
 	fieldPayload   = "payload"
 )
 
-// OrderEvent is the queue representation of an order status event.
-type OrderEvent struct {
-	EventID   string
-	OrderID   string
-	Status    string
-	Timestamp time.Time
-	Payload   map[string]any
-}
+// OrderEvent is retained as an alias for callers of the queue package.
+// The canonical transport-neutral event belongs to the domain package.
+type OrderEvent = domain.OrderEvent
 
 // StreamMessage combines the Redis delivery identity with its order event.
 type StreamMessage struct {
@@ -222,19 +218,15 @@ func eventFields(event OrderEvent) (map[string]any, error) {
 		return nil, errors.New("timestamp is required")
 	}
 
-	payload := event.Payload
-	if payload == nil {
-		payload = map[string]any{}
-	}
-	encodedPayload, err := json.Marshal(payload)
+	encodedPayload, err := normalizePayload(event.Payload)
 	if err != nil {
-		return nil, fmt.Errorf("encode payload: %w", err)
+		return nil, err
 	}
 
 	return map[string]any{
 		fieldEventID:   event.EventID,
 		fieldOrderID:   event.OrderID,
-		fieldStatus:    event.Status,
+		fieldStatus:    string(event.Status),
 		fieldTimestamp: event.Timestamp.UTC().Format(time.RFC3339Nano),
 		fieldPayload:   string(encodedPayload),
 	}, nil
@@ -271,19 +263,9 @@ func parseStreamMessage(message redis.XMessage) (StreamMessage, error) {
 		)
 	}
 
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(payloadValue), &payload); err != nil {
-		return StreamMessage{}, fmt.Errorf(
-			"field %q is not a JSON object: %w",
-			fieldPayload,
-			err,
-		)
-	}
-	if payload == nil {
-		return StreamMessage{}, fmt.Errorf(
-			"field %q must be a JSON object",
-			fieldPayload,
-		)
+	payload, err := normalizePayload(json.RawMessage(payloadValue))
+	if err != nil {
+		return StreamMessage{}, fmt.Errorf("field %q: %w", fieldPayload, err)
 	}
 
 	return StreamMessage{
@@ -291,7 +273,7 @@ func parseStreamMessage(message redis.XMessage) (StreamMessage, error) {
 		Event: OrderEvent{
 			EventID:   eventID,
 			OrderID:   orderID,
-			Status:    status,
+			Status:    domain.Status(status),
 			Timestamp: timestamp,
 			Payload:   payload,
 		},
@@ -324,4 +306,20 @@ func requiredStringField(values map[string]any, name string) (string, error) {
 	}
 
 	return stringValue, nil
+}
+
+func normalizePayload(payload json.RawMessage) (json.RawMessage, error) {
+	if len(payload) == 0 {
+		return json.RawMessage(`{}`), nil
+	}
+
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &object); err != nil {
+		return nil, fmt.Errorf("payload is not a JSON object: %w", err)
+	}
+	if object == nil {
+		return nil, errors.New("payload must be a JSON object")
+	}
+
+	return payload, nil
 }

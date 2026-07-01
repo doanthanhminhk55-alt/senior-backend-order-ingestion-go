@@ -1,10 +1,12 @@
 package queue
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/example/senior-backend-order-ingestion-go/internal/domain"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -13,12 +15,9 @@ func TestEventFields(t *testing.T) {
 	event := OrderEvent{
 		EventID:   "event-123",
 		OrderID:   "order-456",
-		Status:    "PAID",
+		Status:    domain.StatusPaid,
 		Timestamp: timestamp,
-		Payload: map[string]any{
-			"source": "checkout",
-			"total":  42.5,
-		},
+		Payload:   json.RawMessage(`{"source":"checkout","total":42.5}`),
 	}
 
 	fields, err := eventFields(event)
@@ -32,7 +31,7 @@ func TestEventFields(t *testing.T) {
 	if got := fields[fieldOrderID]; got != event.OrderID {
 		t.Errorf("%s = %v, want %q", fieldOrderID, got, event.OrderID)
 	}
-	if got := fields[fieldStatus]; got != event.Status {
+	if got := fields[fieldStatus]; got != string(event.Status) {
 		t.Errorf("%s = %v, want %q", fieldStatus, got, event.Status)
 	}
 	if got := fields[fieldTimestamp]; got != timestamp.UTC().Format(time.RFC3339Nano) {
@@ -75,17 +74,21 @@ func TestParseStreamMessage(t *testing.T) {
 	if got.Event.OrderID != "order-456" {
 		t.Errorf("OrderID = %q, want %q", got.Event.OrderID, "order-456")
 	}
-	if got.Event.Status != "SHIPPED" {
-		t.Errorf("Status = %q, want %q", got.Event.Status, "SHIPPED")
+	if got.Event.Status != domain.StatusShipped {
+		t.Errorf("Status = %q, want %q", got.Event.Status, domain.StatusShipped)
 	}
 	if !got.Event.Timestamp.Equal(timestamp) {
 		t.Errorf("Timestamp = %v, want %v", got.Event.Timestamp, timestamp)
 	}
-	if got.Event.Payload["carrier"] != "parcel-post" {
-		t.Errorf("Payload carrier = %v, want %q", got.Event.Payload["carrier"], "parcel-post")
+	var payload map[string]any
+	if err := json.Unmarshal(got.Event.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal parsed payload: %v", err)
 	}
-	if got.Event.Payload["priority"] != true {
-		t.Errorf("Payload priority = %v, want true", got.Event.Payload["priority"])
+	if payload["carrier"] != "parcel-post" {
+		t.Errorf("Payload carrier = %v, want %q", payload["carrier"], "parcel-post")
+	}
+	if payload["priority"] != true {
+		t.Errorf("Payload priority = %v, want true", payload["priority"])
 	}
 	if got.Attempts != 0 {
 		t.Errorf("Attempts = %d, want 0", got.Attempts)
