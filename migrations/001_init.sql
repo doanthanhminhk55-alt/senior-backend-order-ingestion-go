@@ -1,0 +1,3 @@
+-- Initial schema placeholder.
+-- TODO: Implement the reviewed schema from docs/adr/006-schema-design.md.
+-- This file is intentionally non-operative during the skeleton phase.
