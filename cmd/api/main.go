@@ -4,19 +4,97 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
+
+	appdb "github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/db"
+	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/queue"
+	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/repository"
+	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/service"
+	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/worker"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
-	addr := os.Getenv("HTTP_ADDR")
-	if addr == "" {
-		addr = ":8080"
+	if err := run(); err != nil {
+		log.Fatal(err)
 	}
+}
+
+func run() error {
+	ctx, stop := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
+	defer stop()
+
+	postgresDSN, err := requiredEnv("POSTGRES_DSN")
+	if err != nil {
+		return err
+	}
+	redisAddr, err := requiredEnv("REDIS_ADDR")
+	if err != nil {
+		return err
+	}
+	workerCount, err := positiveIntEnv("WORKER_COUNT", 4)
+	if err != nil {
+		return err
+	}
+	readCount, err := positiveIntEnv("WORKER_READ_COUNT", 10)
+	if err != nil {
+		return err
+	}
+	addr := envOrDefault("HTTP_ADDR", ":8080")
+
+	databasePool, err := appdb.NewPool(ctx, postgresDSN)
+	if err != nil {
+		return err
+	}
+	defer databasePool.Close()
+
+	redisClient := redis.NewClient(&redis.Options{Addr: redisAddr})
+	defer func() {
+		_ = redisClient.Close()
+	}()
+
+	streamQueue := queue.NewRedisStreamQueue(
+		redisClient,
+		envOrDefault("REDIS_STREAM", "order-events"),
+		envOrDefault("REDIS_CONSUMER_GROUP", "order-processors"),
+	)
+	if err := streamQueue.EnsureGroup(ctx); err != nil {
+		return fmt.Errorf("ensure Redis consumer group: %w", err)
+	}
+
+	orderRepository := repository.NewPostgresOrderRepository(databasePool)
+	processor := service.NewProcessor(orderRepository)
+	workerPool, err := worker.NewPool(
+		streamQueue,
+		processor,
+		worker.Config{
+			WorkerCount:    workerCount,
+			ConsumerPrefix: envOrDefault("REDIS_CONSUMER_PREFIX", "app"),
+			ReadCount:      int64(readCount),
+			Block:          2 * time.Second,
+		},
+		log.Default(),
+	)
+	if err != nil {
+		return fmt.Errorf("create worker pool: %w", err)
+	}
+
+	workersDone := make(chan struct{})
+	go func() {
+		workerPool.Run(ctx)
+		close(workersDone)
+	}()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -35,24 +113,59 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	shutdownSignal, stop := signal.NotifyContext(
-		context.Background(),
-		os.Interrupt,
-		syscall.SIGTERM,
-	)
-	defer stop()
-
 	go func() {
-		<-shutdownSignal.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(
+			context.Background(),
+			10*time.Second,
+		)
 		defer cancel()
-		if err := server.Shutdown(ctx); err != nil {
+		if err := server.Shutdown(shutdownCtx); err != nil {
 			log.Printf("graceful shutdown failed: %v", err)
 		}
 	}()
 
-	log.Printf("API skeleton listening on %s", addr)
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("API server failed: %v", err)
+	log.Printf(
+		"API listening on %s with %d order workers",
+		server.Addr,
+		workerCount,
+	)
+	serveErr := server.ListenAndServe()
+	stop()
+	<-workersDone
+
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		return fmt.Errorf("API server failed: %w", serveErr)
 	}
+
+	return nil
+}
+
+func requiredEnv(name string) (string, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return "", fmt.Errorf("%s is required", name)
+	}
+	return value, nil
+}
+
+func envOrDefault(name string, fallback string) string {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func positiveIntEnv(name string, fallback int) (int, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback, nil
+	}
+
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", name)
+	}
+	return parsed, nil
 }
