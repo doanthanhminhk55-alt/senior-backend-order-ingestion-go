@@ -1,0 +1,12 @@
+.git
+.github
+.vscode
+.idea
+.agents
+.codex
+docs
+reports
+migrations
+*.md
+coverage.out
+*.test
