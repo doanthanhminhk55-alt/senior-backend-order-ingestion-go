@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -51,7 +52,20 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	reclaimIntervalSeconds, err := positiveIntEnv("RECLAIM_INTERVAL_SECONDS", 5)
+	if err != nil {
+		return err
+	}
+	reclaimMinIdleSeconds, err := positiveIntEnv("RECLAIM_MIN_IDLE_SECONDS", 30)
+	if err != nil {
+		return err
+	}
+	reclaimCount, err := positiveIntEnv("RECLAIM_COUNT", readCount)
+	if err != nil {
+		return err
+	}
 	addr := envOrDefault("HTTP_ADDR", ":8080")
+	consumerPrefix := envOrDefault("REDIS_CONSUMER_PREFIX", "app")
 
 	databasePool, err := appdb.NewPool(ctx, postgresDSN)
 	if err != nil {
@@ -80,7 +94,7 @@ func run() error {
 		processor,
 		worker.Config{
 			WorkerCount:    workerCount,
-			ConsumerPrefix: envOrDefault("REDIS_CONSUMER_PREFIX", "app"),
+			ConsumerPrefix: consumerPrefix,
 			ReadCount:      int64(readCount),
 			Block:          2 * time.Second,
 		},
@@ -90,10 +104,37 @@ func run() error {
 		return fmt.Errorf("create worker pool: %w", err)
 	}
 
-	workersDone := make(chan struct{})
+	reclaimer, err := worker.NewReclaimer(
+		streamQueue,
+		processor,
+		worker.ReclaimerConfig{
+			ConsumerName: consumerPrefix + "-reclaimer",
+			Interval: time.Duration(reclaimIntervalSeconds) *
+				time.Second,
+			MinIdle: time.Duration(reclaimMinIdleSeconds) *
+				time.Second,
+			Count: int64(reclaimCount),
+		},
+		log.Default(),
+	)
+	if err != nil {
+		return fmt.Errorf("create pending message reclaimer: %w", err)
+	}
+
+	var background sync.WaitGroup
+	background.Add(2)
+	backgroundDone := make(chan struct{})
 	go func() {
+		defer background.Done()
 		workerPool.Run(ctx)
-		close(workersDone)
+	}()
+	go func() {
+		defer background.Done()
+		reclaimer.Run(ctx)
+	}()
+	go func() {
+		background.Wait()
+		close(backgroundDone)
 	}()
 
 	mux := http.NewServeMux()
@@ -132,7 +173,7 @@ func run() error {
 	)
 	serveErr := server.ListenAndServe()
 	stop()
-	<-workersDone
+	<-backgroundDone
 
 	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 		return fmt.Errorf("API server failed: %w", serveErr)
