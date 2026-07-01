@@ -24,6 +24,7 @@ type Collector struct {
 	invalidTransitions atomic.Uint64
 	deadLetters        atomic.Uint64
 	failures           atomic.Uint64
+	simulatedFailures  atomic.Uint64
 	recoveredMessages  atomic.Uint64
 	pendingReplayed    atomic.Uint64
 }
@@ -40,6 +41,7 @@ type Snapshot struct {
 	InvalidTransitions  uint64    `json:"invalid_transitions"`
 	DeadLetters         uint64    `json:"dead_letters"`
 	Failures            uint64    `json:"failures"`
+	SimulatedFailures   uint64    `json:"simulated_failures"`
 	RecoveredMessages   uint64    `json:"recovered_messages"`
 	PendingReplayed     uint64    `json:"pending_replayed"`
 	ThroughputPerSecond float64   `json:"throughput_per_second"`
@@ -104,6 +106,11 @@ func (c *Collector) RecordFailure() {
 	c.failures.Add(1)
 }
 
+// RecordSimulatedFailure records an intentional post-commit skipped XACK.
+func (c *Collector) RecordSimulatedFailure() {
+	c.simulatedFailures.Add(1)
+}
+
 // RecordRecovered records a stale Redis pending message processed successfully.
 func (c *Collector) RecordRecovered() {
 	c.recoveredMessages.Add(1)
@@ -137,6 +144,7 @@ func (c *Collector) snapshotAt(now time.Time) Snapshot {
 		InvalidTransitions:  c.invalidTransitions.Load(),
 		DeadLetters:         c.deadLetters.Load(),
 		Failures:            c.failures.Load(),
+		SimulatedFailures:   c.simulatedFailures.Load(),
 		RecoveredMessages:   c.recoveredMessages.Load(),
 		PendingReplayed:     c.pendingReplayed.Load(),
 		ThroughputPerSecond: throughput,

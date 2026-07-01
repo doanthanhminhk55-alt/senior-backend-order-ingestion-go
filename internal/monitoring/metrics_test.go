@@ -61,6 +61,7 @@ func TestCollector_RecordsProcessorOutcomes(t *testing.T) {
 		DeadLetter:     true,
 	})
 	collector.RecordFailure()
+	collector.RecordSimulatedFailure()
 	collector.RecordRecovered()
 
 	got := collector.snapshotAt(startedAt.Add(10 * time.Second))
@@ -90,6 +91,9 @@ func TestCollector_RecordsProcessorOutcomes(t *testing.T) {
 	}
 	if got.Failures != 1 {
 		t.Errorf("Failures = %d, want 1", got.Failures)
+	}
+	if got.SimulatedFailures != 1 {
+		t.Errorf("SimulatedFailures = %d, want 1", got.SimulatedFailures)
 	}
 	if got.RecoveredMessages != 1 {
 		t.Errorf("RecoveredMessages = %d, want 1", got.RecoveredMessages)

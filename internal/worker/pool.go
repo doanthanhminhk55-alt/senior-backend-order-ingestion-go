@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/domain"
@@ -35,13 +36,21 @@ type EventProcessor interface {
 	) (repository.ProcessResult, error)
 }
 
+// FailureSimulationConfig controls deterministic skipped acknowledgements.
+// Simulation is disabled when either value is zero.
+type FailureSimulationConfig struct {
+	After uint64
+	Count uint64
+}
+
 // Config controls worker count and Redis consumer reads.
 type Config struct {
-	WorkerCount      int
-	ConsumerPrefix   string
-	ReadCount        int64
-	Block            time.Duration
-	ReadErrorBackoff time.Duration
+	WorkerCount       int
+	ConsumerPrefix    string
+	ReadCount         int64
+	Block             time.Duration
+	ReadErrorBackoff  time.Duration
+	FailureSimulation FailureSimulationConfig
 }
 
 // Pool reads and processes Redis Stream messages with bounded concurrency.
@@ -51,6 +60,13 @@ type Pool struct {
 	config    Config
 	logger    *log.Logger
 	metrics   *monitoring.Collector
+	simulator *ackFailureSimulator
+}
+
+type ackFailureSimulator struct {
+	after               uint64
+	count               uint64
+	successfulProcessed atomic.Uint64
 }
 
 // NewPool validates configuration and creates a worker pool.
@@ -96,6 +112,7 @@ func NewPool(
 		config:    config,
 		logger:    logger,
 		metrics:   metrics,
+		simulator: newAckFailureSimulator(config.FailureSimulation),
 	}, nil
 }
 
@@ -186,6 +203,21 @@ func (p *Pool) handleMessage(
 
 	// Process returns success only after the PostgreSQL transaction commits.
 	// XACK must remain after this point so a failed transaction stays pending.
+	if p.simulator != nil && p.simulator.shouldSkipAck() {
+		if p.metrics != nil {
+			p.metrics.RecordSimulatedFailure()
+		}
+		p.logger.Printf(
+			"worker=%s redis_id=%s event_id=%s order_id=%s classification=%s simulated worker failure after DB commit before XACK",
+			consumerName,
+			message.RedisID,
+			result.EventID,
+			result.OrderID,
+			result.Classification,
+		)
+		return
+	}
+
 	if err := p.queue.Ack(ctx, message.RedisID); err != nil {
 		p.logger.Printf(
 			"worker=%s redis_id=%s event_id=%s order_id=%s classification=%s ack=failed error=%q",
@@ -208,6 +240,28 @@ func (p *Pool) handleMessage(
 		result.Classification,
 		result.ReplayedPending,
 	)
+}
+
+func newAckFailureSimulator(
+	config FailureSimulationConfig,
+) *ackFailureSimulator {
+	if config.After == 0 || config.Count == 0 {
+		return nil
+	}
+
+	return &ackFailureSimulator{
+		after: config.After,
+		count: config.Count,
+	}
+}
+
+func (s *ackFailureSimulator) shouldSkipAck() bool {
+	position := s.successfulProcessed.Add(1)
+	if position <= s.after {
+		return false
+	}
+
+	return position-s.after <= s.count
 }
 
 func waitForRetry(ctx context.Context, delay time.Duration) bool {

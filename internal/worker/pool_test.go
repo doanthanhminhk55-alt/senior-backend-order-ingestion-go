@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"slices"
@@ -163,6 +164,140 @@ func TestHandleMessage_AcksCommittedDuplicate(t *testing.T) {
 	}
 	if duplicates := metrics.Snapshot().DuplicatesSkipped; duplicates != 1 {
 		t.Errorf("DuplicatesSkipped metric = %d, want 1", duplicates)
+	}
+}
+
+func TestHandleMessage_SimulatedAckFailureWindow(t *testing.T) {
+	var acked []string
+	streamQueue := &fakeQueue{
+		ack: func(_ context.Context, redisID string) error {
+			acked = append(acked, redisID)
+			return nil
+		},
+	}
+	processor := &fakeProcessor{
+		process: func(
+			_ context.Context,
+			event domain.OrderEvent,
+		) (repository.ProcessResult, error) {
+			return repository.ProcessResult{
+				EventID:        event.EventID,
+				OrderID:        event.OrderID,
+				Classification: domain.ClassificationApplied,
+				Applied:        true,
+			}, nil
+		},
+	}
+	metrics := monitoring.NewCollector()
+	pool, err := NewPool(
+		streamQueue,
+		processor,
+		Config{
+			WorkerCount:    1,
+			ConsumerPrefix: "test-consumer",
+			ReadCount:      1,
+			Block:          time.Second,
+			FailureSimulation: FailureSimulationConfig{
+				After: 1,
+				Count: 2,
+			},
+		},
+		log.New(io.Discard, "", 0),
+		metrics,
+	)
+	if err != nil {
+		t.Fatalf("NewPool() error = %v", err)
+	}
+
+	for index := 1; index <= 4; index++ {
+		message := testMessage()
+		message.RedisID = fmt.Sprintf("%d-0", index)
+		message.Event.EventID = fmt.Sprintf("event-%d", index)
+		pool.handleMessage(context.Background(), "test-consumer-1", message)
+	}
+
+	wantAcked := []string{"1-0", "4-0"}
+	if !slices.Equal(acked, wantAcked) {
+		t.Errorf("acked IDs = %v, want %v", acked, wantAcked)
+	}
+	snapshot := metrics.Snapshot()
+	if snapshot.SimulatedFailures != 2 {
+		t.Errorf(
+			"SimulatedFailures = %d, want 2",
+			snapshot.SimulatedFailures,
+		)
+	}
+	if snapshot.Processed != 4 {
+		t.Errorf("Processed = %d, want 4", snapshot.Processed)
+	}
+	if snapshot.Failures != 0 {
+		t.Errorf("Failures = %d, want 0", snapshot.Failures)
+	}
+}
+
+func TestHandleMessage_DisabledSimulationAlwaysAcks(t *testing.T) {
+	tests := []struct {
+		name       string
+		simulation FailureSimulationConfig
+	}{
+		{
+			name:       "after is zero",
+			simulation: FailureSimulationConfig{After: 0, Count: 2},
+		},
+		{
+			name:       "count is zero",
+			simulation: FailureSimulationConfig{After: 2, Count: 0},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ackCalls := 0
+			streamQueue := &fakeQueue{
+				ack: func(context.Context, string) error {
+					ackCalls++
+					return nil
+				},
+			}
+			processor := &fakeProcessor{
+				process: func(
+					_ context.Context,
+					event domain.OrderEvent,
+				) (repository.ProcessResult, error) {
+					return repository.ProcessResult{
+						EventID:        event.EventID,
+						OrderID:        event.OrderID,
+						Classification: domain.ClassificationApplied,
+						Applied:        true,
+					}, nil
+				},
+			}
+			pool, err := NewPool(
+				streamQueue,
+				processor,
+				Config{
+					WorkerCount:       1,
+					ConsumerPrefix:    "test-consumer",
+					ReadCount:         1,
+					Block:             time.Second,
+					FailureSimulation: tt.simulation,
+				},
+				log.New(io.Discard, "", 0),
+			)
+			if err != nil {
+				t.Fatalf("NewPool() error = %v", err)
+			}
+
+			pool.handleMessage(
+				context.Background(),
+				"test-consumer-1",
+				testMessage(),
+			)
+
+			if ackCalls != 1 {
+				t.Errorf("Ack() calls = %d, want 1", ackCalls)
+			}
+		})
 	}
 }
 

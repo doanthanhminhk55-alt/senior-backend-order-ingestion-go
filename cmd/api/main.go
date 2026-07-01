@@ -53,6 +53,20 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	simulateAckFailureAfter, err := nonNegativeUintEnv(
+		"SIMULATE_ACK_FAILURE_AFTER",
+		0,
+	)
+	if err != nil {
+		return err
+	}
+	simulateAckFailureCount, err := nonNegativeUintEnv(
+		"SIMULATE_ACK_FAILURE_COUNT",
+		0,
+	)
+	if err != nil {
+		return err
+	}
 	reclaimIntervalSeconds, err := positiveIntEnv("RECLAIM_INTERVAL_SECONDS", 5)
 	if err != nil {
 		return err
@@ -99,12 +113,23 @@ func run() error {
 			ConsumerPrefix: consumerPrefix,
 			ReadCount:      int64(readCount),
 			Block:          2 * time.Second,
+			FailureSimulation: worker.FailureSimulationConfig{
+				After: simulateAckFailureAfter,
+				Count: simulateAckFailureCount,
+			},
 		},
 		log.Default(),
 		metricsCollector,
 	)
 	if err != nil {
 		return fmt.Errorf("create worker pool: %w", err)
+	}
+	if simulateAckFailureAfter > 0 && simulateAckFailureCount > 0 {
+		log.Printf(
+			"WARNING: worker XACK failure simulation enabled after=%d count=%d",
+			simulateAckFailureAfter,
+			simulateAckFailureCount,
+		)
 	}
 
 	reclaimer, err := worker.NewReclaimer(
@@ -219,6 +244,19 @@ func positiveIntEnv(name string, fallback int) (int, error) {
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed <= 0 {
 		return 0, fmt.Errorf("%s must be a positive integer", name)
+	}
+	return parsed, nil
+}
+
+func nonNegativeUintEnv(name string, fallback uint64) (uint64, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback, nil
+	}
+
+	parsed, err := strconv.ParseUint(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a non-negative integer", name)
 	}
 	return parsed, nil
 }

@@ -51,6 +51,37 @@ docker compose run --rm producer \
 The producer intentionally includes duplicate, recoverable out-of-order, and
 invalid-transition events and prints progress plus a final summary.
 
+## Recovery demonstration
+
+PostgreSQL commit-to-Redis-acknowledgement failures can be simulated
+deterministically for a recovery test. The simulation is disabled by default.
+This example skips `XACK` for 20 successful messages after the first 5,000:
+
+```sh
+SIMULATE_ACK_FAILURE_AFTER=5000 \
+SIMULATE_ACK_FAILURE_COUNT=20 \
+docker compose up --build -d postgres redis app
+```
+
+Publish the workload and inspect recovery:
+
+```sh
+docker compose run --rm producer \
+  --total 100000 \
+  --duplicate-ratio 0.05 \
+  --out-of-order-ratio 0.03 \
+  --invalid-ratio 0.01
+
+curl http://localhost:8080/stats
+```
+
+The affected messages remain in Redis pending entries because the worker skips
+acknowledgement only after the database transaction succeeds. After the
+configured minimum idle period, the reclaimer processes them through the same
+idempotent processor and acknowledges them. During the demonstration,
+`simulated_failures` should increase by 20 and `recovered_messages` should rise
+as the reclaimer succeeds.
+
 Stop the stack while preserving data:
 
 ```sh
