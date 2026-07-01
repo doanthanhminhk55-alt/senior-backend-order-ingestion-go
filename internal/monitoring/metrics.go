@@ -49,6 +49,7 @@ type Snapshot struct {
 type StatsResponse struct {
 	Snapshot
 	QueueDepth   int64  `json:"queue_depth"`
+	StreamLength int64  `json:"stream_length"`
 	PendingDepth int64  `json:"pending_depth"`
 	WorkerCount  int    `json:"worker_count"`
 	QueueError   string `json:"queue_error,omitempty"`
@@ -57,6 +58,7 @@ type StatsResponse struct {
 // QueueDepthProvider supplies live Redis Stream depth information.
 type QueueDepthProvider interface {
 	QueueDepth(ctx context.Context) (int64, error)
+	StreamLength(ctx context.Context) (int64, error)
 	PendingCount(ctx context.Context) (int64, error)
 }
 
@@ -80,12 +82,16 @@ func (c *Collector) RecordResult(result repository.ProcessResult) {
 		c.processed.Add(1)
 		c.applied.Add(1)
 	case repository.ClassificationDuplicateEvent:
+		c.processed.Add(1)
 		c.duplicatesSkipped.Add(1)
 	case domain.ClassificationDuplicateStatus:
+		c.processed.Add(1)
 		c.duplicateStatus.Add(1)
 	case domain.ClassificationOutOfOrder:
+		c.processed.Add(1)
 		c.outOfOrder.Add(1)
 	case domain.ClassificationInvalidTransition:
+		c.processed.Add(1)
 		c.invalidTransitions.Add(1)
 		if result.DeadLetter {
 			c.deadLetters.Add(1)
@@ -164,6 +170,16 @@ func NewStatsHandler(
 			)
 		} else {
 			response.QueueDepth = queueDepth
+		}
+
+		streamLength, err := queue.StreamLength(r.Context())
+		if err != nil {
+			queueErrors = append(
+				queueErrors,
+				fmt.Sprintf("stream_length: %v", err),
+			)
+		} else {
+			response.StreamLength = streamLength
 		}
 
 		pendingDepth, err := queue.PendingCount(r.Context())

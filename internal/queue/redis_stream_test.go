@@ -58,6 +58,50 @@ func TestClaimPending_ValidatesArguments(t *testing.T) {
 	}
 }
 
+func TestConsumerGroupLag(t *testing.T) {
+	groups := []redis.XInfoGroup{
+		{Name: "other-group", Lag: 99},
+		{Name: "order-processors", Lag: 17},
+	}
+
+	got, ok := consumerGroupLag(groups, "order-processors")
+	if !ok {
+		t.Fatal("consumerGroupLag() found = false, want true")
+	}
+	if got != 17 {
+		t.Errorf("consumerGroupLag() = %d, want 17", got)
+	}
+}
+
+func TestConsumerGroupLag_Unavailable(t *testing.T) {
+	tests := []struct {
+		name   string
+		groups []redis.XInfoGroup
+	}{
+		{
+			name:   "group missing",
+			groups: []redis.XInfoGroup{{Name: "other-group", Lag: 4}},
+		},
+		{
+			name: "lag indeterminate",
+			groups: []redis.XInfoGroup{
+				{Name: "order-processors", Lag: -1},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if lag, ok := consumerGroupLag(tt.groups, "order-processors"); ok {
+				t.Errorf(
+					"consumerGroupLag() = (%d, true), want unavailable",
+					lag,
+				)
+			}
+		})
+	}
+}
+
 func TestEventFields(t *testing.T) {
 	timestamp := time.Date(2026, time.July, 1, 9, 30, 15, 123456789, time.FixedZone("ICT", 7*60*60))
 	event := OrderEvent{

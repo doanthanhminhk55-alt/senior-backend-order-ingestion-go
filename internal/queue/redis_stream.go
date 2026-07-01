@@ -225,18 +225,46 @@ func (q *RedisStreamQueue) Ack(ctx context.Context, redisID string) error {
 	return nil
 }
 
-// QueueDepth returns the total number of entries currently in the stream.
+// QueueDepth returns unread consumer-group lag when Redis can determine it.
+// Older Redis versions and groups with indeterminate lag report no usable lag;
+// in that case the method falls back to stream length for compatibility.
 func (q *RedisStreamQueue) QueueDepth(ctx context.Context) (int64, error) {
-	depth, err := q.client.XLen(ctx, q.streamName).Result()
+	groups, err := q.client.XInfoGroups(ctx, q.streamName).Result()
+	if err == nil {
+		if lag, ok := consumerGroupLag(groups, q.groupName); ok {
+			return lag, nil
+		}
+	}
+
+	length, lengthErr := q.StreamLength(ctx)
+	if lengthErr != nil {
+		if err != nil {
+			return 0, fmt.Errorf(
+				"get lag for Redis stream %q group %q: %v; fallback: %w",
+				q.streamName,
+				q.groupName,
+				err,
+				lengthErr,
+			)
+		}
+		return 0, lengthErr
+	}
+
+	return length, nil
+}
+
+// StreamLength returns the total number of retained entries from Redis XLEN.
+func (q *RedisStreamQueue) StreamLength(ctx context.Context) (int64, error) {
+	length, err := q.client.XLen(ctx, q.streamName).Result()
 	if err != nil {
 		return 0, fmt.Errorf(
-			"get depth of Redis stream %q: %w",
+			"get length of Redis stream %q: %w",
 			q.streamName,
 			err,
 		)
 	}
 
-	return depth, nil
+	return length, nil
 }
 
 // PendingCount returns the number of delivered but unacknowledged group entries.
@@ -256,6 +284,19 @@ func (q *RedisStreamQueue) PendingCount(ctx context.Context) (int64, error) {
 	}
 
 	return pending.Count, nil
+}
+
+func consumerGroupLag(
+	groups []redis.XInfoGroup,
+	groupName string,
+) (int64, bool) {
+	for _, group := range groups {
+		if group.Name == groupName && group.Lag >= 0 {
+			return group.Lag, true
+		}
+	}
+
+	return 0, false
 }
 
 func parseStreamMessages(messages []redis.XMessage) ([]StreamMessage, error) {

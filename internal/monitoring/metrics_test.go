@@ -16,13 +16,19 @@ import (
 
 type fakeDepthProvider struct {
 	queueDepth   int64
+	streamLength int64
 	pendingDepth int64
 	queueErr     error
+	streamErr    error
 	pendingErr   error
 }
 
 func (f fakeDepthProvider) QueueDepth(context.Context) (int64, error) {
 	return f.queueDepth, f.queueErr
+}
+
+func (f fakeDepthProvider) StreamLength(context.Context) (int64, error) {
+	return f.streamLength, f.streamErr
 }
 
 func (f fakeDepthProvider) PendingCount(context.Context) (int64, error) {
@@ -59,9 +65,9 @@ func TestCollector_RecordsProcessorOutcomes(t *testing.T) {
 
 	got := collector.snapshotAt(startedAt.Add(10 * time.Second))
 
-	if got.Processed != 1 || got.Applied != 1 {
+	if got.Processed != 5 || got.Applied != 1 {
 		t.Errorf(
-			"processed/applied = %d/%d, want 1/1",
+			"processed/applied = %d/%d, want 5/1",
 			got.Processed,
 			got.Applied,
 		)
@@ -94,11 +100,25 @@ func TestCollector_RecordsProcessorOutcomes(t *testing.T) {
 	if got.UptimeSeconds != 10 {
 		t.Errorf("UptimeSeconds = %v, want 10", got.UptimeSeconds)
 	}
-	if got.ThroughputPerSecond != 0.1 {
+	if got.ThroughputPerSecond != 0.5 {
 		t.Errorf(
-			"ThroughputPerSecond = %v, want 0.1",
+			"ThroughputPerSecond = %v, want 0.5",
 			got.ThroughputPerSecond,
 		)
+	}
+}
+
+func TestCollector_FailureDoesNotIncrementProcessed(t *testing.T) {
+	collector := NewCollector()
+
+	collector.RecordFailure()
+	got := collector.Snapshot()
+
+	if got.Failures != 1 {
+		t.Errorf("Failures = %d, want 1", got.Failures)
+	}
+	if got.Processed != 0 {
+		t.Errorf("Processed = %d, want 0", got.Processed)
 	}
 }
 
@@ -132,7 +152,11 @@ func TestStatsHandler_ReturnsJSONSnapshot(t *testing.T) {
 	})
 	handler := NewStatsHandler(
 		collector,
-		fakeDepthProvider{queueDepth: 123, pendingDepth: 7},
+		fakeDepthProvider{
+			queueDepth:   23,
+			streamLength: 123,
+			pendingDepth: 7,
+		},
 		4,
 	)
 	request := httptest.NewRequest(http.MethodGet, "/stats", nil)
@@ -154,10 +178,13 @@ func TestStatsHandler_ReturnsJSONSnapshot(t *testing.T) {
 	if got.Processed != 1 || got.Applied != 1 {
 		t.Errorf("processed/applied = %d/%d, want 1/1", got.Processed, got.Applied)
 	}
-	if got.QueueDepth != 123 || got.PendingDepth != 7 {
+	if got.QueueDepth != 23 ||
+		got.StreamLength != 123 ||
+		got.PendingDepth != 7 {
 		t.Errorf(
-			"queue/pending depth = %d/%d, want 123/7",
+			"queue/stream/pending depth = %d/%d/%d, want 23/123/7",
 			got.QueueDepth,
+			got.StreamLength,
 			got.PendingDepth,
 		)
 	}
@@ -174,6 +201,7 @@ func TestStatsHandler_ReportsQueueErrorsWithoutFailing(t *testing.T) {
 		NewCollector(),
 		fakeDepthProvider{
 			queueErr:   errors.New("Redis unavailable"),
+			streamErr:  errors.New("Redis unavailable"),
 			pendingErr: errors.New("consumer group unavailable"),
 		},
 		2,
