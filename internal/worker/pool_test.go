@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/domain"
+	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/monitoring"
 	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/queue"
 	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/repository"
 )
@@ -80,6 +81,8 @@ func TestHandleMessage_AcksOnlyAfterSuccessfulProcessing(t *testing.T) {
 		},
 	}
 	pool := newTestPool(t, streamQueue, processor, 1)
+	metrics := monitoring.NewCollector()
+	pool.metrics = metrics
 	message := testMessage()
 
 	pool.handleMessage(context.Background(), "consumer-1", message)
@@ -87,6 +90,14 @@ func TestHandleMessage_AcksOnlyAfterSuccessfulProcessing(t *testing.T) {
 	want := []string{"process:event-123", "ack:1-0"}
 	if !slices.Equal(operations, want) {
 		t.Errorf("operations = %v, want %v", operations, want)
+	}
+	snapshot := metrics.Snapshot()
+	if snapshot.Processed != 1 || snapshot.Applied != 1 {
+		t.Errorf(
+			"processed/applied metrics = %d/%d, want 1/1",
+			snapshot.Processed,
+			snapshot.Applied,
+		)
 	}
 }
 
@@ -107,11 +118,16 @@ func TestHandleMessage_DoesNotAckFailedProcessing(t *testing.T) {
 		},
 	}
 	pool := newTestPool(t, streamQueue, processor, 1)
+	metrics := monitoring.NewCollector()
+	pool.metrics = metrics
 
 	pool.handleMessage(context.Background(), "consumer-1", testMessage())
 
 	if ackCalls != 0 {
 		t.Errorf("Ack() calls = %d, want 0", ackCalls)
+	}
+	if failures := metrics.Snapshot().Failures; failures != 1 {
+		t.Errorf("Failures metric = %d, want 1", failures)
 	}
 }
 
@@ -137,11 +153,16 @@ func TestHandleMessage_AcksCommittedDuplicate(t *testing.T) {
 		},
 	}
 	pool := newTestPool(t, streamQueue, processor, 1)
+	metrics := monitoring.NewCollector()
+	pool.metrics = metrics
 
 	pool.handleMessage(context.Background(), "consumer-1", testMessage())
 
 	if ackedID != "1-0" {
 		t.Errorf("acked Redis ID = %q, want %q", ackedID, "1-0")
+	}
+	if duplicates := metrics.Snapshot().DuplicatesSkipped; duplicates != 1 {
+		t.Errorf("DuplicatesSkipped metric = %d, want 1", duplicates)
 	}
 }
 

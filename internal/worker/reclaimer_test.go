@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/domain"
+	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/monitoring"
 	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/queue"
 	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/repository"
 )
@@ -74,6 +75,8 @@ func TestReclaimer_SuccessfulProcessingAcksClaimedMessage(t *testing.T) {
 		},
 	}
 	reclaimer := newTestReclaimer(t, pendingQueue, processor)
+	metrics := monitoring.NewCollector()
+	reclaimer.metrics = metrics
 
 	reclaimer.reclaim(context.Background())
 
@@ -84,6 +87,16 @@ func TestReclaimer_SuccessfulProcessingAcksClaimedMessage(t *testing.T) {
 			"operations = %v, want [process:event-123 ack:1-0]",
 			operations,
 		)
+	}
+	snapshot := metrics.Snapshot()
+	if snapshot.RecoveredMessages != 1 {
+		t.Errorf(
+			"RecoveredMessages metric = %d, want 1",
+			snapshot.RecoveredMessages,
+		)
+	}
+	if snapshot.Applied != 1 {
+		t.Errorf("Applied metric = %d, want 1", snapshot.Applied)
 	}
 }
 
@@ -112,11 +125,16 @@ func TestReclaimer_FailedProcessingDoesNotAck(t *testing.T) {
 		},
 	}
 	reclaimer := newTestReclaimer(t, pendingQueue, processor)
+	metrics := monitoring.NewCollector()
+	reclaimer.metrics = metrics
 
 	reclaimer.reclaim(context.Background())
 
 	if ackCalls != 0 {
 		t.Errorf("Ack() calls = %d, want 0", ackCalls)
+	}
+	if failures := metrics.Snapshot().Failures; failures != 1 {
+		t.Errorf("Failures metric = %d, want 1", failures)
 	}
 }
 

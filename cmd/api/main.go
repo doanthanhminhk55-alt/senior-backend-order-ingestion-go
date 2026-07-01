@@ -15,6 +15,7 @@ import (
 	"time"
 
 	appdb "github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/db"
+	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/monitoring"
 	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/queue"
 	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/repository"
 	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/service"
@@ -66,6 +67,7 @@ func run() error {
 	}
 	addr := envOrDefault("HTTP_ADDR", ":8080")
 	consumerPrefix := envOrDefault("REDIS_CONSUMER_PREFIX", "app")
+	metricsCollector := monitoring.NewCollector()
 
 	databasePool, err := appdb.NewPool(ctx, postgresDSN)
 	if err != nil {
@@ -99,6 +101,7 @@ func run() error {
 			Block:          2 * time.Second,
 		},
 		log.Default(),
+		metricsCollector,
 	)
 	if err != nil {
 		return fmt.Errorf("create worker pool: %w", err)
@@ -116,6 +119,7 @@ func run() error {
 			Count: int64(reclaimCount),
 		},
 		log.Default(),
+		metricsCollector,
 	)
 	if err != nil {
 		return fmt.Errorf("create pending message reclaimer: %w", err)
@@ -142,6 +146,14 @@ func run() error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
+	mux.Handle(
+		"/stats",
+		monitoring.NewStatsHandler(
+			metricsCollector,
+			streamQueue,
+			workerCount,
+		),
+	)
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
 		// TODO: Expose application, Redis Stream, worker, and database metrics.
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")

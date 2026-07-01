@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/domain"
+	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/monitoring"
 	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/queue"
 	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/repository"
 )
@@ -49,6 +50,7 @@ type Pool struct {
 	processor EventProcessor
 	config    Config
 	logger    *log.Logger
+	metrics   *monitoring.Collector
 }
 
 // NewPool validates configuration and creates a worker pool.
@@ -57,6 +59,7 @@ func NewPool(
 	processor EventProcessor,
 	config Config,
 	logger *log.Logger,
+	collectors ...*monitoring.Collector,
 ) (*Pool, error) {
 	if streamQueue == nil {
 		return nil, errors.New("stream queue is required")
@@ -82,12 +85,17 @@ func NewPool(
 	if logger == nil {
 		logger = log.Default()
 	}
+	var metrics *monitoring.Collector
+	if len(collectors) > 0 {
+		metrics = collectors[0]
+	}
 
 	return &Pool{
 		queue:     streamQueue,
 		processor: processor,
 		config:    config,
 		logger:    logger,
+		metrics:   metrics,
 	}, nil
 }
 
@@ -159,6 +167,9 @@ func (p *Pool) handleMessage(
 ) {
 	result, err := p.processor.Process(ctx, message.Event)
 	if err != nil {
+		if p.metrics != nil {
+			p.metrics.RecordFailure()
+		}
 		p.logger.Printf(
 			"worker=%s redis_id=%s event_id=%s order_id=%s classification=FAILURE error=%q",
 			consumerName,
@@ -168,6 +179,9 @@ func (p *Pool) handleMessage(
 			err,
 		)
 		return
+	}
+	if p.metrics != nil {
+		p.metrics.RecordResult(result)
 	}
 
 	// Process returns success only after the PostgreSQL transaction commits.

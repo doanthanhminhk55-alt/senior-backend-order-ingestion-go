@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/monitoring"
 	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/queue"
 )
 
@@ -34,6 +35,7 @@ type Reclaimer struct {
 	processor EventProcessor
 	config    ReclaimerConfig
 	logger    *log.Logger
+	metrics   *monitoring.Collector
 }
 
 // NewReclaimer validates configuration and creates a pending-entry reclaimer.
@@ -42,6 +44,7 @@ func NewReclaimer(
 	processor EventProcessor,
 	config ReclaimerConfig,
 	logger *log.Logger,
+	collectors ...*monitoring.Collector,
 ) (*Reclaimer, error) {
 	if pendingQueue == nil {
 		return nil, errors.New("pending queue is required")
@@ -64,12 +67,17 @@ func NewReclaimer(
 	if logger == nil {
 		logger = log.Default()
 	}
+	var metrics *monitoring.Collector
+	if len(collectors) > 0 {
+		metrics = collectors[0]
+	}
 
 	return &Reclaimer{
 		queue:     pendingQueue,
 		processor: processor,
 		config:    config,
 		logger:    logger,
+		metrics:   metrics,
 	}, nil
 }
 
@@ -132,6 +140,9 @@ func (r *Reclaimer) handleMessage(
 ) {
 	result, err := r.processor.Process(ctx, message.Event)
 	if err != nil {
+		if r.metrics != nil {
+			r.metrics.RecordFailure()
+		}
 		r.logger.Printf(
 			"reclaimer=%s redis_id=%s event_id=%s order_id=%s classification=FAILURE error=%q",
 			r.config.ConsumerName,
@@ -141,6 +152,10 @@ func (r *Reclaimer) handleMessage(
 			err,
 		)
 		return
+	}
+	if r.metrics != nil {
+		r.metrics.RecordResult(result)
+		r.metrics.RecordRecovered()
 	}
 
 	// Processing success means the PostgreSQL transaction committed. Only now

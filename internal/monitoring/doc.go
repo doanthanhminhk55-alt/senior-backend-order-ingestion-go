@@ -1,2 +1,2 @@
-// Package monitoring will expose health and operational metrics.
+// Package monitoring exposes health and operational metrics.
 package monitoring
