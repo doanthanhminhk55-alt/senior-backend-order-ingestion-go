@@ -3,8 +3,8 @@
 Initial project skeleton for a high-traffic e-commerce order ingestion service
 built with Go, Redis Streams, PostgreSQL, and Docker Compose.
 
-> This repository is design-first and does not contain the order-processing
-> business logic yet.
+> This repository is design-first and now includes the core order-processing
+> pipeline. Monitoring/report generation remains a later step.
 
 ## Planned capabilities
 
@@ -39,7 +39,20 @@ Stop the stack gracefully:
 docker compose down
 ```
 
-The `producer` service is wired into Compose but does not emit events yet.
+The `producer` service publishes 100,000 deterministic load-test events by
+default. To override its generation settings:
+
+```sh
+docker compose run --rm producer \
+  --total 100000 \
+  --duplicate-ratio 0.05 \
+  --out-of-order-ratio 0.03 \
+  --invalid-ratio 0.01 \
+  --seed 1
+```
+
+The producer intentionally includes duplicate, recoverable out-of-order, and
+invalid-transition events and prints progress plus a final summary.
 
 ## Local compile check
 
@@ -51,5 +64,5 @@ go test ./...
 
 ## Status
 
-Skeleton only. Queue, database, producer, worker, and domain behavior are TODOs
-for later implementation steps.
+The core queue, database processor, worker recovery, and load producer are
+implemented. Monitoring/report generation remains a later step.
