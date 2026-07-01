@@ -27,8 +27,9 @@ type OrderEvent = domain.OrderEvent
 type StreamMessage struct {
 	RedisID string
 	Event   OrderEvent
-	// Attempts is zero for newly read messages because XREADGROUP does not
-	// return a delivery count. Pending-entry recovery can populate it later.
+	// Attempts is zero because neither XREADGROUP nor XAUTOCLAIM returns the
+	// pending entry's delivery count. Reading XPENDING details would require
+	// an additional query and is intentionally deferred.
 	Attempts int
 }
 
@@ -133,20 +134,73 @@ func (q *RedisStreamQueue) ReadGroup(
 
 	messages := make([]StreamMessage, 0)
 	for _, stream := range streams {
-		for _, message := range stream.Messages {
-			parsed, parseErr := parseStreamMessage(message)
-			if parseErr != nil {
-				return nil, fmt.Errorf(
-					"parse Redis stream message %q: %w",
-					message.ID,
-					parseErr,
-				)
-			}
-			messages = append(messages, parsed)
+		parsed, parseErr := parseStreamMessages(stream.Messages)
+		if parseErr != nil {
+			return nil, parseErr
 		}
+		messages = append(messages, parsed...)
 	}
 
 	return messages, nil
+}
+
+// ClaimPending transfers stale pending entries to a consumer without
+// acknowledging them.
+func (q *RedisStreamQueue) ClaimPending(
+	ctx context.Context,
+	consumerName string,
+	minIdle time.Duration,
+	count int64,
+) ([]StreamMessage, error) {
+	if consumerName == "" {
+		return nil, errors.New("consumer name is required")
+	}
+	if minIdle <= 0 {
+		return nil, errors.New("minimum idle duration must be greater than zero")
+	}
+	if count <= 0 {
+		return nil, errors.New("claim count must be greater than zero")
+	}
+
+	claimed := make([]StreamMessage, 0, count)
+	start := "0-0"
+
+	for int64(len(claimed)) < count {
+		rawMessages, next, err := q.client.XAutoClaim(
+			ctx,
+			&redis.XAutoClaimArgs{
+				Stream:   q.streamName,
+				Group:    q.groupName,
+				Consumer: consumerName,
+				MinIdle:  minIdle,
+				Start:    start,
+				Count:    count - int64(len(claimed)),
+			},
+		).Result()
+		if errors.Is(err, redis.Nil) {
+			return claimed, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf(
+				"claim pending Redis stream messages for consumer %q: %w",
+				consumerName,
+				err,
+			)
+		}
+
+		parsed, err := parseStreamMessages(rawMessages)
+		if err != nil {
+			return nil, err
+		}
+		claimed = append(claimed, parsed...)
+
+		if next == "" || next == "0-0" || next == start {
+			break
+		}
+		start = next
+	}
+
+	return claimed, nil
 }
 
 // Ack acknowledges a message after its database transaction has committed.
@@ -202,6 +256,23 @@ func (q *RedisStreamQueue) PendingCount(ctx context.Context) (int64, error) {
 	}
 
 	return pending.Count, nil
+}
+
+func parseStreamMessages(messages []redis.XMessage) ([]StreamMessage, error) {
+	parsed := make([]StreamMessage, 0, len(messages))
+	for _, message := range messages {
+		streamMessage, err := parseStreamMessage(message)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"parse Redis stream message %q: %w",
+				message.ID,
+				err,
+			)
+		}
+		parsed = append(parsed, streamMessage)
+	}
+
+	return parsed, nil
 }
 
 func eventFields(event OrderEvent) (map[string]any, error) {

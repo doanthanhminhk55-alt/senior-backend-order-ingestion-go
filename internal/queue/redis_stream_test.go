@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -9,6 +10,53 @@ import (
 	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/domain"
 	"github.com/redis/go-redis/v9"
 )
+
+func TestClaimPending_ValidatesArguments(t *testing.T) {
+	streamQueue := &RedisStreamQueue{}
+	tests := []struct {
+		name         string
+		consumerName string
+		minIdle      time.Duration
+		count        int64
+		wantError    string
+	}{
+		{
+			name:      "consumer is required",
+			minIdle:   time.Minute,
+			count:     10,
+			wantError: "consumer name",
+		},
+		{
+			name:         "minimum idle must be positive",
+			consumerName: "reclaimer",
+			count:        10,
+			wantError:    "minimum idle",
+		},
+		{
+			name:         "count must be positive",
+			consumerName: "reclaimer",
+			minIdle:      time.Minute,
+			wantError:    "claim count",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := streamQueue.ClaimPending(
+				context.Background(),
+				tt.consumerName,
+				tt.minIdle,
+				tt.count,
+			)
+			if err == nil {
+				t.Fatal("ClaimPending() error = nil, want error")
+			}
+			if !strings.Contains(err.Error(), tt.wantError) {
+				t.Errorf("error = %q, want it to contain %q", err, tt.wantError)
+			}
+		})
+	}
+}
 
 func TestEventFields(t *testing.T) {
 	timestamp := time.Date(2026, time.July, 1, 9, 30, 15, 123456789, time.FixedZone("ICT", 7*60*60))
