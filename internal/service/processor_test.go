@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/example/senior-backend-order-ingestion-go/internal/domain"
-	"github.com/example/senior-backend-order-ingestion-go/internal/repository"
+	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/domain"
+	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/repository"
 )
 
 type fakeOrderRepository struct {

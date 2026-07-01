@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/example/senior-backend-order-ingestion-go/internal/domain"
+	"github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go/internal/domain"
 	"github.com/redis/go-redis/v9"
 )
 

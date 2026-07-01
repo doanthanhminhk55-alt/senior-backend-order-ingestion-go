@@ -1,4 +1,4 @@
-module github.com/example/senior-backend-order-ingestion-go
+module github.com/doanthanhminhk55-alt/senior-backend-order-ingestion-go
 
 go 1.23.0
 
